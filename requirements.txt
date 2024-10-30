@@ -1,0 +1,7 @@
+ffmpeg-python
+pillow
+pyaudio
+rich
+yt-dlp
+keyboard
+numpy
