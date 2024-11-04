@@ -1,11 +1,9 @@
 import os
 import ffmpeg
-from PIL import Image
 import pyaudio
 import wave
 import threading
 import time
-from rich.console import Console
 from subprocess import run as system
 from src.utils import changefontsize
 from src.utils.others import yt_download
@@ -16,39 +14,66 @@ from multiprocessing import Pool, Queue
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn, SpinnerColumn
 import io, tempfile
 
-from src.utils.file import tools
-
-console = Console()
+# from src.utils.file import tools
 
 class TerminalPlayer:
     def __init__(self) -> None:
-        self.BRIGHTNESS_LEVELS_LOW = " .-+*wGHM#&%@"
+        self.BRIGHTNESS_LEVELS_LOW = "  .-+⠶⣶#Bg0MNWQ%&@⣿███████████████"
         self.BRIGHTNESS_LEVELS_HIGH = "          .-':_,^=;><+!rc*/z?sLTv)J7(|F{C}fI31tlu[neoZ5Yxya]2ESwqkP6h9d4VpOGbUAKXHm8RD#$Bg0MNWQ%&@██████████████"
         self.playing = False
         self.stop = False
 
-    def renderVideo(self, frames_ascii, dir_name, audio_bytes, frame_rate):
-        with open(dir_name, 'wb') as file:
-            tools.write_video(file, frames_ascii, frame_rate, self.crtBrightness - 1, audio_bytes)
+    # def renderVideo(self, frames_ascii, dir_name, audio_bytes, frame_rate):
+    #     with open(dir_name, 'wb') as file:
+    #         tools.write_video(file, frames_ascii, frame_rate, self.crtBrightness - 1, audio_bytes)
 
-    def loadVideo(self, path):
-        with open(path, 'rb') as file:
-            return tools.read_video(file)
-
-    def move_cursor_to_top(self):
-        print('\033[H', end='')
+    # def loadVideo(self, path):
+    #     with open(path, 'rb') as file:
+    #         return tools.read_video(file)
 
     def convert_to_ascii(self, image, brightnessLevels):
-        grayscale_image = image.convert("L")
+        rgb_pixels = np.array(image, dtype=np.int32)
 
-        pixels = np.array(grayscale_image)
-        normalized_pixels = pixels / 255.0
+        brightness = np.mean(rgb_pixels, axis=2) / 255.0
+        ascii_indices = (brightness * (len(brightnessLevels) - 1)).astype(int)
 
-        ascii_indices = (normalized_pixels * (len(brightnessLevels) - 1)).astype(int)
+        ascii_image = []
 
-        ascii_image = np.array([[brightnessLevels[idx] for idx in row] for row in ascii_indices])
+        height, width, _ = rgb_pixels.shape
+        last_rgb = np.zeros((3,), dtype=np.int32)
+        last_rgb_used = np.zeros((height, width), dtype=bool) 
+        ascii_chars = np.array([brightnessLevels[idx] for idx in ascii_indices.flatten()]).reshape(height, width)
 
-        return "\n".join("".join(row) for row in ascii_image)
+        ansi_colors = np.full((height, width), "\033[0m", dtype=object)
+        color_changes = np.zeros((height, width), dtype=bool) 
+
+        for y in range(height):
+            for x in range(width):
+                current_rgb = rgb_pixels[y, x]
+                distance = 0
+                for i in range(3):
+                    distance += abs(current_rgb[i] - last_rgb[i]) # more detailed difference
+
+                if distance > 100 or (y == 0 and x == 0):
+                    ansi_colors[y, x] = f"\033[38;2;{current_rgb[0]};{current_rgb[1]};{current_rgb[2]}m"
+                    color_changes[y, x] = True
+                    last_rgb = current_rgb  # Update last RGB value
+                else:
+                    ansi_colors[y, x] = ansi_colors[y, x-1]  # Use the previous color if no change
+
+        # Construct ASCII rows
+        for y in range(height):
+            ascii_row = []
+            for x in range(width):
+                if color_changes[y, x]:
+                    ascii_row.append(ansi_colors[y, x] + ascii_chars[y, x])  # Use ANSI color
+                else:
+                    ascii_row.append(ascii_chars[y, x])  # Use the same character without color change
+            ascii_image.append("".join(ascii_row))
+
+        return ascii_image
+
+
 
     def extract_frames_and_audio(self, input_filename, target_frame_width, target_frame_height):
         audio_data = (
@@ -64,24 +89,19 @@ class TerminalPlayer:
             ffmpeg
             .input(input_filename)
             .filter('scale', target_frame_width, target_frame_height)
-            .filter('format', 'gray')
-            .output('pipe:', format='rawvideo', pix_fmt='gray', loglevel="quiet")
+            .filter('format', 'rgb24')  # Mude para 'rgb24' para saída em cores
+            .output('pipe:', format='rawvideo', pix_fmt='rgb24', loglevel="quiet")  # Use 'rgb24' aqui também
             .run_async(pipe_stdout=True, pipe_stderr=True)
         )
 
-        frame_size = target_frame_width * target_frame_height
+        frame_size = target_frame_width * target_frame_height * 3  # Mude para 3 para RGB
         while True:
             in_bytes = process.stdout.read(frame_size)
             if not in_bytes:
                 break
-            frame = np.frombuffer(in_bytes, np.uint8).reshape((target_frame_height, target_frame_width))
+            frame = np.frombuffer(in_bytes, np.uint8).reshape((target_frame_height, target_frame_width, 3))  # Mude para incluir 3 canais
 
-            pil_image = Image.fromarray(frame) 
-            byte_io = io.BytesIO()
-            pil_image.save(byte_io, format='PNG') 
-            byte_content = byte_io.getvalue() 
-
-            frames.append(byte_content) 
+            frames.append(frame)  # Armazene o frame como um array numpy
 
         process.stdout.close()
         process.wait()
@@ -119,74 +139,76 @@ class TerminalPlayer:
 
         wait()
 
-    def load_video(self):
-        while True:
-            target = console.input("\n[yellow][INPUT][/] [bold white]Enter the path of the .ascv file: ")
-            if not os.path.exists(target):
-                console.print(f"[bold red][ERROR][/] [bold white]Couldn't find the path of the file: {target}.")
-                continue
-            break
+    # deactivated for now
+    # def load_video(self):
+    #     while True:
+    #         target = input("\nEnter the path of the .ascv file: ")
+    #         if not os.path.exists(target):
+    #             print(f"Couldn't find the path of the file: {target}.")
+    #             continue
+    #         break
 
-        console.print("[bold yellow][INFO][/] Processing data...")
-        frames_ascii, frame_rate, brightness, audio_bytes = self.loadVideo(target)
-        console.print("[bold green][SUCCESS][/] Video loaded successfully.")
+    #     print("Processing data...")
+    #     frames_ascii, frame_rate, brightness, audio_bytes = self.loadVideo(target)
+    #     print("Video loaded successfully.")
 
-        return frames_ascii, frame_rate, target, audio_bytes
+    #     return frames_ascii, frame_rate, target, audio_bytes
     
     def create_video(self):
-        console.print("\n[bold yellow][INFO][/] [bold white]The size of the window will change the video quality!")
+        print("\nThe size of the window will change the video quality!")
         while True:
             try:
-                choose = int(console.input("[bold green][OPTIONS][/] [bold white]Choose the brightness quality (type the number):\n[green][1][/] Low/Medium (recommended)\n[green][2][/] High\nYour input: "))
+                choose = int(input("Choose the brightness quality (type the number):\n[1] Low/Medium (recommended)\n[2] High\nYour input: "))
                 break
             except ValueError:
-                console.print(f"[bold red][ERROR][/] The input has to be a number!")
+                print(f"The input has to be a number!")
 
-        brightnessLevels = self.BRIGHTNESS_LEVELS_LOW if choose == 1 else self.BRIGHTNESS_LEVELS_HIGH
         self.crtBrightness = choose
 
-        chooseyt = console.input("[bold green][OPTION][/] Do you want to use an Youtube URL? [Y/N] ")
+        chooseyt = input("Do you want to use an Youtube URL? [Y/N] ")
 
         if chooseyt.strip().lower() in ['y', 'yes', 'sim', 's']:
             while True:
-                yt_url = console.input("[bold red][YOUTUBE][/] Enter the video's URL: ")
+                yt_url = input("Enter the video's URL: ")
 
-                response, info, ext, content = yt_download(yt_url)
-                if not yt_url and not response:
-                    console.print(f"[bold red][ERROR][/] The URL '{yt_url}' doesn't exist!")
+                args = yt_download(yt_url)
+                if not yt_url or not args:
+                    print(f"The URL '{yt_url}' doesn't exist!")
                     continue
-                console.print(f"[bold green][SUCCESS][/] Video downloaded successfully.")
-                with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{ext}') as temp_file:
-                    temp_file.write(content)
+                print(f"Video downloaded successfully.")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{args[2]}') as temp_file:
+                    temp_file.write(args[3])
                     input_filename = temp_file.name
                 break
 
         else:
             while True:
-                input_filename = console.input("\n[bold yellow][INPUT][bold white] Enter the video's path (this requires the file extension): ")
+                input_filename = input("\nEnter the video's path (this requires the file extension): ")
                 if not os.path.exists(input_filename):
-                    console.print(f"[bold red][ERROR][/] The path '{input_filename}' doesn't exist!")
+                    print(f"The path '{input_filename}' doesn't exist!")
                     continue
                 break
         
         while True:
             try:
-                change_res = console.input("[bold yellow][INPUT][/] Enter the desired size of font (smaller fonts will increase resolution, but can make the process slower, recommended: 5-10, leave blank to skip): ").strip()
+                change_res = input("Enter the desired size of font (smaller fonts will increase resolution, but can make the process slower, recommended: 5-10, leave blank to skip): ").strip()
                 if not change_res:
                     change_res = 10
                     break
                 
                 change_res = int(change_res)
                 if change_res and int(change_res) > 1:
-                    console.print(f"[cyan][PROCESS][/] [bold white]Capturing resolution...")
+                    print(f"Capturing resolution...")
                     changefontsize.change_fz(change_res)
                     time.sleep(1)
+                    terminal = os.get_terminal_size()
+                    changefontsize.change_fz(10) # Return to normal size for better reading
                     break
                 elif change_res > 20 or change_res < 1:
-                    console.print("[bold red][ERROR][/] [bold white]The font size has to be between 1 and 20!")
+                    print("The font size has to be between 1 and 20!")
                     continue
             except ValueError:
-                console.print(f"[bold red][ERROR][/] [bold white]Please insert a valid value!")
+                print(f"Please insert a valid value!")
                 continue
 
         probe = ffmpeg.probe(input_filename)
@@ -194,22 +216,20 @@ class TerminalPlayer:
         vidW = int(vid_info['width'])
         vidH = int(vid_info['height'])
 
-        terminal = os.get_terminal_size()
-
-        changefontsize.change_fz(10) # Return to normal size for better reading
-
         target_frame_width = terminal.columns - 1
         target_frame_height = terminal.lines - 2
 
         ratio = vidW / vidH
         target_frame_width = int(round(target_frame_height * ratio * 2))
 
-        console.print(f"[bold yellow][INFO][/] [bold white]Video resolution: {vidW} X {vidH}")
-        console.print(f"[bold yellow][INFO][/] [bold white]Terminal resolution: {target_frame_width} X {target_frame_height}")
+        print(f"\nVideo resolution: {vidW} X {vidH}")
+        print(f"Terminal resolution: {target_frame_width} X {target_frame_height}")
+
+        print(f"\nExtracting frames and audio...")
 
         frame_bytes, audio_bytes = self.extract_frames_and_audio(input_filename, target_frame_width, target_frame_height)
 
-        console.print("[bold yellow][INFO][/] [bold white]Converting frames to ASCII...")
+        print("Converting frames to ASCII...")
 
         frames_ascii = []
         queue = Queue()
@@ -249,19 +269,19 @@ class TerminalPlayer:
         return frames_ascii, frame_rate, audio_bytes, change_res, renderArgs
     
     def process_frame(self, byte_content):
-        with Image.open(io.BytesIO(byte_content)) as image:
-            return self.convert_to_ascii(image, self.BRIGHTNESS_LEVELS_HIGH if self.crtBrightness == 2 else self.BRIGHTNESS_LEVELS_LOW)
+        return "\n".join(self.convert_to_ascii(byte_content, self.BRIGHTNESS_LEVELS_HIGH if self.crtBrightness == 2 else self.BRIGHTNESS_LEVELS_LOW))
 
     def main(self):
-        console.print("[bold yellow][INFO][/] The imported frames will follow the resolution which the frames were processed!")
-        load_choice = console.input("[bold green][OPTIONS][/] [bold white]Do you want to import frames? (Y/N): ")
+        # deactivated for now
+        # print("The imported frames will follow the resolution which the frames were processed!")
+        # load_choice = input("Do you want to import frames? (Y/N): ")
         
-        if load_choice.lower() in ['y', 'yes', 'sim', 's']:
-            frames_ascii, frame_rate, target, audio_bytes = self.load_video()
-        else:
-            frames_ascii, frame_rate, audio_bytes, resolution, renderArgs  = self.create_video()
+        # if load_choice.lower() in ['y', 'yes', 'sim', 's']:
+        #     frames_ascii, frame_rate, target, audio_bytes = self.load_video()
+        # else:
+        frames_ascii, frame_rate, audio_bytes, resolution, renderArgs  = self.create_video()
 
-        console.input("\n[bold white]Press enter to play (while playing, press Q to exit)... ")
+        input("\nPress enter to play (while playing, press Q to exit)... ")
 
         hk = threading.Thread(target=self.start_hotkeyts)
         hk.start()
@@ -278,9 +298,8 @@ class TerminalPlayer:
         start_time = time.time()
 
         from sys import stdout
-        flush_rate = 5
 
-        stdout.write('\033[?25l') # Hides cursor
+        stdout.write('\033[?25l') # hides cursor
 
         try: # avoids error if load_video
             if resolution:
@@ -293,10 +312,8 @@ class TerminalPlayer:
             expected_frame = int(elapsed_time / frame_duration)
 
             if i >= expected_frame:
-                self.move_cursor_to_top()
-                stdout.write(frame)
-                if i + 1 % flush_rate == 0:
-                    stdout.flush()
+                stdout.write('\033[H' + frame)
+                stdout.flush()
 
             time_to_sleep = frame_duration - (time.time() - (start_time + i * frame_duration))
             time.sleep(max(0, time_to_sleep))
@@ -305,33 +322,34 @@ class TerminalPlayer:
 
         audio_thread.join()
         changefontsize.change_fz(10)
-        print('\033[?25h') # Show cursor
-        print('\033[2J\033[H', end='', flush=True) # Clears buffer
+        print('\033[?25h') # show cursor
+        print('\033[2J\033[H', end='', flush=True) # clears buffer
 
-        try:
-            from time import time as timestamp
-            save = console.input("[bold white]Do you want to save the video? (this might take some time) (Y/N): ")
-            if save.strip().lower() in ['y', 'yes', 's', 'sim']:
-                flag = timestamp()
-                frames_ascii, audio_bytes, frame_rate = renderArgs
-                while True:
-                    name = console.input("[bold yellow][INPUT][bold white] Enter a path/name to export the file: ")
-                    if not name:
-                        console.print("[bold red][ERROR][/] [bold white]Please insert a valid name![/]")
-                    elif name[5:] != '.ascv':
-                        name += '.ascv'
-                    if os.path.exists(name):
-                        console.print("[bold red][ERROR][/] [bold white]The file already exists![/]")
-                        continue
-                    break
-                console.print(f"[bold yellow][INFO][/] Saving video...")
-                self.renderVideo(frames_ascii, name, audio_bytes, frame_rate)
-                count = round(timestamp() - flag, 2)
-                console.print(f"[bold green][SUCCESS][/] Video saved successfully in {count} seconds!")
-        except Exception as e:
-            print(e)
+        # removed for now
+        # try:
+        #     from time import time as timestamp
+        #     save = input("Do you want to save the video? (this might take some time) (Y/N): ")
+        #     if save.strip().lower() in ['y', 'yes', 's', 'sim']:
+        #         flag = timestamp()
+        #         frames_ascii, audio_bytes, frame_rate = renderArgs
+        #         while True:
+        #             name = input("Enter a path/name to export the file: ")
+        #             if not name:
+        #                 print("Please insert a valid name!")
+        #             elif name[5:] != '.ascv':
+        #                 name += '.ascv'
+        #             if os.path.exists(name):
+        #                 print("The file already exists!")
+        #                 continue
+        #             break
+        #         print(f"Saving video...")
+        #         self.renderVideo(frames_ascii, name, audio_bytes, frame_rate)
+        #         count = round(timestamp() - flag, 2)
+        #         print(f"Video saved successfully in {count} seconds!")
+        # except Exception as e:
+        #     print(e)
 
-        console.input("[bold white]Press enter to exit...")
+        input("\033[0mPress enter to exit...")
         exit(0)
         
 if __name__ == "__main__":

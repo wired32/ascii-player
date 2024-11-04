@@ -12,8 +12,6 @@ class muteLogger:
         pass
 
 def yt_download(link, custom_name=None):
-    from rich import print
-
     # set up options for yt-dlp
     ydl_opts = {
         'format': 'best',  # choose the best quality available
@@ -23,7 +21,7 @@ def yt_download(link, custom_name=None):
 
     with YoutubeDL(ydl_opts) as ydl:
         try:
-            print(f"[bold yellow][INFO][/] Downloading video...")
+            print(f"Downloading video...")
             info = ydl.extract_info(link, download=False)  # set download=False to get info without downloading
             
             # get the download URL
