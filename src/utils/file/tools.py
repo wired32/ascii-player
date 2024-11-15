@@ -91,7 +91,7 @@ def pack_frames_parallel(frames, brightness):
         packed_batches = pool.starmap(pack_frame_batch, [(frames[i:i + batch_size], brightness) for i in range(0, len(frames), batch_size)])
     return [frame for batch in packed_batches for frame in batch]
 
-# Optimized write_video function with mmap for writing, less frequent flushes, and zlib compression at level 2
+# Optimized write_video function with mmap for writing, less frequent flushes, and zlib compression at level 2 // changed it back to 1 for faster writing
 def write_video(file, frames, frame_rate, brightness, audio_bytes):
     # Use memory-mapped file for write efficiency
     with mmap.mmap(file.fileno(), 0) as mmapped_file:
