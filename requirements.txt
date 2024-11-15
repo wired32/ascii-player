@@ -1,7 +1,6 @@
-ffmpeg-python
-pillow
+ffmpeg
 pyaudio
-rich
-yt-dlp
 keyboard
 numpy
+rich
+colorama
