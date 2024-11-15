@@ -253,54 +253,50 @@ class TerminalPlayer:
         return frames_ascii, frame_rate, audio_bytes
     
     def process_frame(self, byte_content):
-        """
-        Converts a batch of raw video frames into ANSI color-coded ASCII art frames.
-
-        This function processes each image in the batch, computes color changes for
-        each pixel, and generates a corresponding ANSI color-coded ASCII art frame.
-        It uses vectorized operations to efficiently determine significant color
-        changes and update ANSI color codes accordingly.
-
-        Args:
-            byte_content (list): A list of raw video frames, where each frame is
-                                represented as a NumPy array of RGB pixel values.
-
-        Returns:
-            list: A list of strings, where each string is an ASCII art representation
-                of a video frame with ANSI color codes.
-        """
         batch = []
 
         for image in byte_content:
             rgb_pixels = np.array(image, dtype=np.int32)
+
+            ascii_image = []
+
             height, width, _ = rgb_pixels.shape
             last_rgb = np.zeros((3,), dtype=np.int32)
-            
-            # vectorized distance computation
-            distance = np.sum(np.abs(rgb_pixels - last_rgb), axis=-1)
-            
-            # create a mask where the color changes are significant
-            color_changes = distance > 1
+
             ansi_colors = np.full((height, width), "\033[0m", dtype=object)
-            
-            # update ANSI color codes where changes occur
-            ansi_colors[color_changes] = np.array(
-                [f"\033[48;2;{rgb[0]};{rgb[1]};{rgb[2]}m" for rgb in rgb_pixels[color_changes]],
-                dtype=object
-            )
-            
-            # create the ASCII image directly
-            ascii_image = [
-                "".join(
-                    [f"{ansi_colors[y, x]} " if color_changes[y, x] else " " for x in range(width)]
-                )
-                for y in range(height)
-            ]
+            color_changes = np.zeros((height, width), dtype=bool) 
 
+            for y in range(height):
+                for x in range(width):
+                    current_rgb = rgb_pixels[y, x]
+
+                    distance = 0
+                    for i in range(3):
+                        distance += abs(current_rgb[i] - last_rgb[i])
+
+                    if distance > 0 or (y == 0 and x == 0):
+                        ansi_colors[y, x] = f"\033[48;2;{current_rgb[0]};{current_rgb[1]};{current_rgb[2]}m"
+                        color_changes[y, x] = True
+                        last_rgb = current_rgb
+                    else:
+                        ansi_colors[y, x] = ansi_colors[y, x-1]  # use the previous color if no change
+
+            # create the ANSI sequence directly without printing
+            for y in range(height):
+                ascii_row = []
+                for x in range(width):
+                    if color_changes[y, x]:
+                        ascii_row.append(ansi_colors[y, x] + " ")  # use ANSI color
+                    else:
+                        ascii_row.append(" ")  # use the same character without color change
+                ascii_image.append("".join(ascii_row))
+
+            # append the final ANSI sequences image for this frame
             batch.append("\n".join(ascii_image))
-        
-        return batch
 
+        # return the batch containing the ANSI sequences for the images
+        return batch
+    
     def main(self):
         """
         Main entry point of the application. This method is responsible for playing
@@ -314,7 +310,38 @@ class TerminalPlayer:
         playing. Finally, it clears the terminal and waits for user input to
         play again or exit.
         """
-        frames_ascii, frame_rate, audio_bytes  = self.create_video()
+        
+        self._main()
+
+    def _clearBuffer(self):
+        try:
+            if self.windows:
+                system("cls")
+            else:
+                system("clear")
+        except Exception as e:
+            stdout.write("Couldn't clear terminal: " + str(e))
+            stdout.write("\nSkipping...\n")
+
+    def _main(self):
+        """
+        Core function to handle video playback in the terminal using curses.
+
+        This function initializes the video creation process, sets up audio and
+        video playback using threads, and manages user input for playback control.
+        It attempts to initialize color support for ANSI escape codes using the
+        colorama library. The function uses threading to handle hotkeys and audio
+        playback concurrently with video frame rendering.
+
+        Behavior:
+            - Initializes video frames and audio extraction.
+            - Waits for user input to start playback.
+            - Plays video frames in the terminal using ANSI codes, updating only
+            lines that have changed to minimize terminal redraws.
+            - Monitors for user input to stop playback and clear the terminal.
+            - Provides an option for the user to replay the video or exit.
+        """
+        frames_ascii, frame_rate, audio_bytes = self.create_video()
 
         input("\nPress enter to play (while playing, press Q to exit)... ")
         
@@ -334,7 +361,7 @@ class TerminalPlayer:
             while self.playing is not True:
                 continue
 
-            system("cls", shell=True)
+            self._clearBuffer()
 
             frame_duration = 1 / frame_rate
             start_time = time.time()
@@ -377,15 +404,6 @@ class TerminalPlayer:
                 
             audio_thread.join()
             stdout.write('\033[?25h') # show cursor
-
-            try:
-                if self.windows:
-                    system("cls", shell=True)
-                else:
-                    system("clear", shell=True)
-            except Exception as e:
-                stdout.write("Couldn't clear terminal: " + str(e))
-                stdout.write("\nSkipping...\n")
 
         play_frames()
         while True:
